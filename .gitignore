@@ -1,0 +1,27 @@
+# PDF 原始檔（檔案太大）
+data/**/*.pdf
+
+# 萃取輸出（圖片、文字，檔案多且大）
+data/**/images/
+data/**/texts/
+
+# Python venv
+.venv/
+
+# 系統檔案
+.DS_Store
+.claude/
+
+# 暫存檔
+tmp_*.xlsx
+*.tmp
+*.crdownload
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# logs（保留資料夾，不追蹤內容）
+**/logs/*.log
+**/logs/*.txt
