@@ -5,6 +5,7 @@ data/**/*.pdf
 data/**/images/
 data/**/images_v1_3/
 data/**/texts/
+data/**/garbled_pages.txt
 
 # 工具腳本（本機使用，不進版控）
 esg-pdf-cuter/clean_output.py

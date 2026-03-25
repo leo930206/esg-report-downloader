@@ -12,12 +12,13 @@ from datetime import datetime
 import fitz           # PyMuPDF
 import pandas as pd
 
-__version__ = "2.4"
+__version__ = "2.5"
 # v2.0 — 初版 GUI + Union-Find 聚類 + EXPAND_PT=20 + 文字遮罩
 # v2.1 — 加入 A/B/C/D 過濾（QR、全頁圖、裝飾線、路徑數門檻）
 # v2.2 — 移除文字遮罩/文字擴張，EXPAND_PT=20→50
 # v2.3 — CLUSTER_GAP_PT=80→40，避免同頁兩張圖被合併成一個框
 # v2.4 — 恢復 texts/ 全頁文字存檔輸出
+# v2.5 — 圖片改 JPEG q85 + RENDER_SCALE=2；亂碼頁記錄至 garbled_pages.txt
 
 # ============================================================
 # 路徑設定
@@ -110,7 +111,7 @@ ui_stats = {
 # ============================================================
 # 萃取參數
 # ============================================================
-RENDER_SCALE     = 3      # 渲染倍率（3x = 216 DPI）
+RENDER_SCALE     = 2      # 渲染倍率（2x = 144 DPI，配合 JPEG 輸出）
 CLUSTER_GAP_PT   = 40    # 向量路徑聚類距離（PDF 點座標）
 EXPAND_PT        = 50    # 偵測框擴張距離（加大以涵蓋軸標籤/圖例）
 MIN_AREA_PCT     = 0.5   # 最小面積佔比（%），過濾微小雜訊
@@ -260,7 +261,7 @@ def process_pdf(pdf_path: str, year: str) -> list[dict]:
         txt_dir.mkdir(parents=True, exist_ok=True)
 
     results: list[dict] = []
-    garbled_pages = 0
+    garbled_page_nums: list[int] = []
 
     for page_index, page in enumerate(doc):
         page_num  = page_index + 1
@@ -275,7 +276,7 @@ def process_pdf(pdf_path: str, year: str) -> list[dict]:
                               or '\u3400' <= c <= '\u4dbf')
                     is_garbled = (cjk / len(page_text) < 0.05) and len(page_text) > 50
                     if is_garbled:
-                        garbled_pages += 1
+                        garbled_page_nums.append(page_num)
                     else:
                         txt_path = txt_dir / f"{file_stem}_p{page_num}.txt"
                         txt_path.write_text(page_text, encoding="utf-8")
@@ -290,11 +291,11 @@ def process_pdf(pdf_path: str, year: str) -> list[dict]:
 
                 asset_idx += 1
                 type_code = "RA" if rtype == 'Raster' else "VC"
-                img_name  = f"{file_stem}_p{page_num}_{asset_idx}_{type_code}.png"
+                img_name  = f"{file_stem}_p{page_num}_{asset_idx}_{type_code}.jpg"
                 save_path = img_dir / img_name
 
                 pix = None
-                for scale in (RENDER_SCALE, 2, 1):
+                for scale in (RENDER_SCALE, 1):
                     try:
                         pix = page.get_pixmap(
                             matrix=fitz.Matrix(scale, scale),
@@ -308,7 +309,7 @@ def process_pdf(pdf_path: str, year: str) -> list[dict]:
                     asset_idx -= 1
                     continue
 
-                pix.save(str(save_path))
+                pix.save(str(save_path), jpg_quality=85)
                 pix = None
 
                 results.append({
@@ -325,6 +326,15 @@ def process_pdf(pdf_path: str, year: str) -> list[dict]:
 
         except Exception as e:
             log_queue.put(('warning', f'  跳過 {file_stem} 第 {page_num} 頁：{e}'))
+
+    # ── 亂碼頁記錄 ──
+    if SAVE_TXT and garbled_page_nums:
+        garbled_path = base_dir / "garbled_pages.txt"
+        garbled_path.write_text(
+            f"共 {len(garbled_page_nums)} 頁無法擷取文字（可能需要 OCR）：\n"
+            + ", ".join(str(p) for p in garbled_page_nums) + "\n",
+            encoding="utf-8"
+        )
 
     doc.close()
     return results
