@@ -1,5 +1,6 @@
 import pandas as pd
 import os
+import sys
 import time
 import random
 import threading
@@ -28,6 +29,11 @@ STANDARD_PATTERN = re.compile(r'^\d{4}_\d+_.+\.pdf$')
 _BASE_DIR        = Path(__file__).parent.absolute()
 _DATA_DIR        = _BASE_DIR.parent / "data"    # 統一輸出根目錄（與 esg_pdf_cuter 共用）
 logs_folder      = str(_BASE_DIR / "logs")
+DASHBOARD_PY     = _BASE_DIR.parent / "esg-dashboard" / "dashboard.py"
+
+def _open_dashboard():
+    if DASHBOARD_PY.exists():
+        subprocess.Popen([sys.executable, str(DASHBOARD_PY)])
 os.makedirs(logs_folder, exist_ok=True)
 os.makedirs(str(_DATA_DIR), exist_ok=True)
 
@@ -354,11 +360,16 @@ def create_startup_window():
               activebackground='#0051a8', activeforeground='white',
               relief='flat', padx=22, pady=9, cursor='hand2',
               command=on_start).pack(side=tk.LEFT, padx=8)
-    tk.Button(btn_frame, text="📊  查看進度",
+    tk.Button(btn_frame, text="📁  開啟輸出資料夾",
               font=FONT_MAIN, bg=APPLE_CARD, fg=APPLE_TEXT,
               activebackground=APPLE_BORDER, relief='flat', padx=22, pady=9,
               cursor='hand2',
-              command=lambda: create_view_window(root)).pack(side=tk.LEFT, padx=8)
+              command=lambda: subprocess.Popen(['open', str(_DATA_DIR)])).pack(side=tk.LEFT, padx=8)
+    tk.Button(btn_frame, text="📊  查看主控台",
+              font=FONT_MAIN, bg=APPLE_CARD, fg=APPLE_TEXT,
+              activebackground=APPLE_BORDER, relief='flat', padx=22, pady=9,
+              cursor='hand2',
+              command=_open_dashboard).pack(side=tk.LEFT, padx=8)
 
     root.mainloop()
 
@@ -492,13 +503,17 @@ def create_progress_window():
               relief='flat', padx=16, pady=7, cursor='hand2', bd=0,
               command=lambda: toggle_pause(pause_btn_text)).pack(side=tk.LEFT)
 
-    view_btn = tk.Button(bottom, text='📊  查看進度',
-                         font=FONT_MAIN, bg=APPLE_CARD, fg=APPLE_TEXT,
-                         activebackground=APPLE_BORDER,
-                         relief='flat', padx=16, pady=7, cursor='hand2', bd=0,
-                         state='disabled',
-                         command=lambda: create_view_window(root))
-    view_btn.pack(side=tk.LEFT, padx=8)
+    tk.Button(bottom, text='📁  開啟輸出資料夾',
+              font=FONT_MAIN, bg=APPLE_CARD, fg=APPLE_TEXT,
+              activebackground=APPLE_BORDER,
+              relief='flat', padx=16, pady=7, cursor='hand2', bd=0,
+              command=lambda: subprocess.Popen(['open', str(_DATA_DIR)])
+              ).pack(side=tk.LEFT, padx=8)
+    tk.Button(bottom, text='📊  查看主控台',
+              font=FONT_MAIN, bg=APPLE_CARD, fg=APPLE_TEXT,
+              activebackground=APPLE_BORDER,
+              relief='flat', padx=16, pady=7, cursor='hand2', bd=0,
+              command=_open_dashboard).pack(side=tk.LEFT, padx=8)
 
     time_label = tk.Label(bottom, text='', font=FONT_LABEL,
                           fg=APPLE_GREY, bg=APPLE_BG)
@@ -522,12 +537,6 @@ def create_progress_window():
                 pause_btn_text.set(val)
             elif cmd == 'status_dot':
                 status_dot.config(text=val[0], fg=val[1])
-
-        # 暫停中或完成後才開放查看進度按鈕
-        if pause_event.is_set() or program_done.is_set():
-            view_btn.config(state='normal')
-        else:
-            view_btn.config(state='disabled')
 
         p   = ui_stats['processed']
         tot = ui_stats['total']

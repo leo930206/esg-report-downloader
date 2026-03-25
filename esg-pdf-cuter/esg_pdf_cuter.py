@@ -1,4 +1,5 @@
 import os
+import sys
 import subprocess
 import threading
 import queue
@@ -19,6 +20,12 @@ __version__ = "2.5"
 # v2.3 — CLUSTER_GAP_PT=80→40，避免同頁兩張圖被合併成一個框
 # v2.4 — 恢復 texts/ 全頁文字存檔輸出
 # v2.5 — 圖片改 JPEG q85 + RENDER_SCALE=2；亂碼頁記錄至 garbled_pages.txt
+
+DASHBOARD_PY = Path(__file__).parent.parent / "esg-dashboard" / "dashboard.py"
+
+def _open_dashboard():
+    if DASHBOARD_PY.exists():
+        subprocess.Popen([sys.executable, str(DASHBOARD_PY)])
 
 # ============================================================
 # 路徑設定
@@ -497,6 +504,11 @@ def create_startup_window():
               activebackground=APPLE_BORDER, relief='flat', padx=22, pady=9,
               cursor='hand2',
               command=lambda: subprocess.Popen(['open', str(DATA_DIR)])).pack(side=tk.LEFT, padx=8)
+    tk.Button(btn_frame, text="📊  查看主控台",
+              font=FONT_MAIN, bg=APPLE_CARD, fg=APPLE_TEXT,
+              activebackground=APPLE_BORDER, relief='flat', padx=22, pady=9,
+              cursor='hand2',
+              command=_open_dashboard).pack(side=tk.LEFT, padx=8)
 
     root.mainloop()
     return selected_years
@@ -613,6 +625,11 @@ def create_progress_window(years):
               activebackground=APPLE_BORDER, relief='flat', padx=16, pady=7,
               cursor='hand2', bd=0,
               command=lambda: subprocess.Popen(['open', str(DATA_DIR)])).pack(side=tk.LEFT, padx=8)
+    tk.Button(bottom, text="📊  查看主控台",
+              font=FONT_MAIN, bg=APPLE_CARD, fg=APPLE_TEXT,
+              activebackground=APPLE_BORDER, relief='flat', padx=16, pady=7,
+              cursor='hand2', bd=0,
+              command=_open_dashboard).pack(side=tk.LEFT, padx=8)
     time_label = tk.Label(bottom, text='', font=FONT_LABEL,
                           fg=APPLE_GREY, bg=APPLE_BG)
     time_label.pack(side=tk.RIGHT)
