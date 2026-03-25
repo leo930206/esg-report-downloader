@@ -11,7 +11,7 @@ from datetime import datetime
 
 import fitz           # PyMuPDF
 import pandas as pd
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
 
 # ============================================================
 # 路徑設定
@@ -36,6 +36,54 @@ def available_years():
     dirs = [d for d in os.listdir(DATA_DIR)
             if (DATA_DIR / d).is_dir() and d.isdigit()]
     return sorted(dirs) or [str(y) for y in _year_range()]
+
+# ============================================================
+# App Icon（Dock / 視窗）
+# ============================================================
+def set_app_icon(root: tk.Tk, emoji: str = "🌱") -> None:
+    """把 emoji 渲染成圖片並設為視窗與 Dock 圖示（macOS 透過 AppKit）。"""
+    try:
+        import base64
+        from io import BytesIO
+
+        size = 256
+        img  = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(img)
+
+        font = None
+        for fp in ("/System/Library/Fonts/Apple Color Emoji.ttc",
+                   "/System/Library/Fonts/AppleColorEmoji.ttf"):
+            try:
+                font = ImageFont.truetype(fp, size - 20)
+                break
+            except Exception:
+                pass
+
+        if font:
+            draw.text((10, 10), emoji, font=font, embedded_color=True)
+
+        buf = BytesIO()
+        img.save(buf, format="PNG")
+        png_bytes = buf.getvalue()
+
+        # macOS：透過 AppKit 設定 Dock 圖示
+        try:
+            from AppKit import NSApplication, NSImage
+            from Foundation import NSData
+            data     = NSData.dataWithBytes_length_(png_bytes, len(png_bytes))
+            ns_image = NSImage.alloc().initWithData_(data)
+            NSApplication.sharedApplication().setApplicationIconImage_(ns_image)
+        except Exception:
+            pass
+
+        # 所有平台：設定 tkinter 視窗圖示
+        photo = tk.PhotoImage(data=base64.b64encode(png_bytes).decode())
+        root.iconphoto(True, photo)
+        root._icon_ref = photo  # 防止被 GC 回收
+
+    except Exception:
+        pass
+
 
 # ============================================================
 # Apple 風格配色
@@ -80,15 +128,18 @@ MIN_PATHS        = 10    # 頁面向量路徑數 >= 此值才做聚類
 # [A] QR code 過濾：長寬比接近 1:1 且面積極小 → 跳過
 QR_ASPECT_MIN    = 0.8   # 長寬比下限（width/height）
 QR_ASPECT_MAX    = 1.25  # 長寬比上限
-QR_MAX_AREA_PCT  = 4.0   # Raster 面積 < 此值（%）且為正方形 → 視為 QR code
+QR_MAX_AREA_PCT  = 9.0   # Raster 面積 < 此值（%）且為正方形 → 視為 QR code（提高以涵蓋較大 QR）
 
-# [B] Raster 全頁圖過濾：章節封面照片通常 > 頁面 70%
-RASTER_MAX_AREA_PCT = 70  # Raster 專屬最大面積佔比（%），比 Vector 嚴格
+# [B] Raster 全頁圖過濾：章節封面照片
+RASTER_MAX_AREA_PCT = 60  # Raster 專屬最大面積佔比（%），比 Vector 嚴格（降低以抓更多封面照）
 
 # [C] Vector 裝飾線過濾：扁平 cluster 且位於頁首/頁尾區域 → 跳過
-DECO_ZONE_PCT    = 0.12  # 頁面頂/底各 12% 為「裝飾區」
-DECO_MAX_HT_PT   = 40    # cluster 高度 < 此值（pt）才可能是裝飾線
+DECO_ZONE_PCT        = 0.12  # 頁面頂/底各 12% 為「裝飾區」
+DECO_MAX_HT_PT       = 40    # cluster 高度 < 此值（pt）才可能是裝飾線
 DECO_MIN_WIDTH_RATIO = 0.65  # cluster 寬度 > 頁面此比例才算「橫跨型裝飾」
+
+# [D] Vector cluster 路徑數門檻：過少代表是裝飾圓形/單一 icon → 跳過
+MIN_CLUSTER_PATHS = 5    # cluster 內原始路徑數 < 此值 → 跳過（裝飾形狀通常只有 1~3 條路徑）
 
 TEXT_LINK_GAP_PT = 30    # 距圖表 <= 此距離的文字視為「相鄰標籤」，納入裁切並保留
 MASK_UNRELATED   = True  # 塗白裁切範圍內與圖無關的文字區塊
@@ -97,11 +148,11 @@ SAVE_TXT         = True  # 每張圖另存同名 .txt（含圖表周邊文字）
 # ============================================================
 # 核心函式
 # ============================================================
-def _cluster_drawing_rects(rects: list, gap: float) -> list:
+def _cluster_drawing_rects(rects: list, gap: float) -> list[tuple]:
     """
     把向量路徑的 fitz.Rect 用 Union-Find 聚類。
     兩個 Rect 若互相擴張 gap/2 後重疊，就歸同一群。
-    回傳每群合併後的 fitz.Rect 列表。
+    回傳每群 (合併後的 fitz.Rect, 路徑數量) 列表。
     """
     if not rects:
         return []
@@ -127,14 +178,17 @@ def _cluster_drawing_rects(rects: list, gap: float) -> list:
                 union(i, j)
 
     groups: dict[int, fitz.Rect] = {}
+    counts: dict[int, int] = {}
     for i in range(n):
         root = find(i)
         if root in groups:
             groups[root] |= rects[i]
+            counts[root] += 1
         else:
             groups[root] = rects[i]
+            counts[root] = 1
 
-    return list(groups.values())
+    return [(groups[k], counts[k]) for k in groups]
 
 
 def _detect_chart_regions(page) -> list[tuple]:
@@ -175,7 +229,11 @@ def _detect_chart_regions(page) -> list[tuple]:
 
     if len(drawing_rects) >= MIN_PATHS:
         clusters = _cluster_drawing_rects(drawing_rects, CLUSTER_GAP_PT)
-        for cluster_rect in clusters:
+        for cluster_rect, path_count in clusters:
+            # [D] 路徑數門檻：單一裝飾形狀通常只有 1~3 條路徑
+            if path_count < MIN_CLUSTER_PATHS:
+                continue
+
             expanded = cluster_rect + (-EXPAND_PT, -EXPAND_PT, EXPAND_PT, EXPAND_PT)
             expanded &= page_rect          # 不超出頁面邊界
             if not (expanded.width > MIN_DIM_PT and expanded.height > MIN_DIM_PT
@@ -434,6 +492,7 @@ def create_startup_window():
     root.geometry("480x380")
     root.configure(bg=APPLE_BG)
     root.resizable(False, False)
+    set_app_icon(root)
 
     header = tk.Frame(root, bg=APPLE_BLUE, pady=14)
     header.pack(fill=tk.X)
@@ -508,6 +567,7 @@ def create_progress_window(years):
     root.geometry("1000x700")
     root.configure(bg=APPLE_BG)
     root.resizable(True, True)
+    set_app_icon(root)
 
     def on_close():
         if program_done.is_set():

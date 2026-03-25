@@ -64,6 +64,53 @@ ui_stats = {
 }
 
 # ============================================================
+# App Icon（Dock / 視窗）
+# ============================================================
+def set_app_icon(root: tk.Tk, emoji: str = "🌱") -> None:
+    """把 emoji 渲染成圖片並設為視窗與 Dock 圖示（macOS 透過 AppKit）。"""
+    try:
+        import base64
+        from io import BytesIO
+        from PIL import Image, ImageDraw, ImageFont
+
+        size = 256
+        img  = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(img)
+
+        font = None
+        for fp in ("/System/Library/Fonts/Apple Color Emoji.ttc",
+                   "/System/Library/Fonts/AppleColorEmoji.ttf"):
+            try:
+                font = ImageFont.truetype(fp, size - 20)
+                break
+            except Exception:
+                pass
+
+        if font:
+            draw.text((10, 10), emoji, font=font, embedded_color=True)
+
+        buf = BytesIO()
+        img.save(buf, format="PNG")
+        png_bytes = buf.getvalue()
+
+        try:
+            from AppKit import NSApplication, NSImage
+            from Foundation import NSData
+            data     = NSData.dataWithBytes_length_(png_bytes, len(png_bytes))
+            ns_image = NSImage.alloc().initWithData_(data)
+            NSApplication.sharedApplication().setApplicationIconImage_(ns_image)
+        except Exception:
+            pass
+
+        photo = tk.PhotoImage(data=base64.b64encode(png_bytes).decode())
+        root.iconphoto(True, photo)
+        root._icon_ref = photo
+
+    except Exception:
+        pass
+
+
+# ============================================================
 # macOS 風格顏色
 # ============================================================
 APPLE_BG     = '#f5f5f7'
@@ -266,6 +313,7 @@ def create_startup_window():
     root.geometry("480x380")
     root.configure(bg=APPLE_BG)
     root.resizable(False, False)
+    set_app_icon(root)
 
     header = tk.Frame(root, bg=APPLE_BLUE, pady=14)
     header.pack(fill=tk.X)
@@ -340,6 +388,7 @@ def create_progress_window():
     root.geometry("1000x700")
     root.configure(bg=APPLE_BG)
     root.resizable(True, True)
+    set_app_icon(root)
 
     def on_close():
         if program_done.is_set():
