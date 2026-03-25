@@ -11,7 +11,6 @@ from datetime import datetime
 
 import fitz           # PyMuPDF
 import pandas as pd
-from PIL import Image, ImageDraw, ImageFont
 
 # ============================================================
 # 路徑設定
@@ -106,7 +105,7 @@ ui_stats = {
 # ============================================================
 RENDER_SCALE     = 3      # 渲染倍率（3x = 216 DPI）
 CLUSTER_GAP_PT   = 80    # 向量路徑聚類距離（PDF 點座標，80pt ≈ 1.1 吋）
-EXPAND_PT        = 20    # 偵測框基礎擴張距離
+EXPAND_PT        = 50    # 偵測框擴張距離（加大以涵蓋軸標籤/圖例）
 MIN_AREA_PCT     = 0.5   # 最小面積佔比（%），過濾微小雜訊
 MAX_AREA_PCT     = 90    # 最大面積佔比（%），Vector 過濾整頁背景
 MIN_DIM_PT       = 100   # 最小寬/高（PDF 點），過濾細長雜訊
@@ -116,10 +115,10 @@ MIN_PATHS        = 10    # 頁面向量路徑數 >= 此值才做聚類
 # [A] QR code 過濾：長寬比接近 1:1 且面積極小 → 跳過
 QR_ASPECT_MIN    = 0.8   # 長寬比下限（width/height）
 QR_ASPECT_MAX    = 1.25  # 長寬比上限
-QR_MAX_AREA_PCT  = 9.0   # Raster 面積 < 此值（%）且為正方形 → 視為 QR code（提高以涵蓋較大 QR）
+QR_MAX_AREA_PCT  = 9.0   # Raster 面積 < 此值（%）且為正方形 → 視為 QR code
 
 # [B] Raster 全頁圖過濾：章節封面照片
-RASTER_MAX_AREA_PCT = 60  # Raster 專屬最大面積佔比（%），比 Vector 嚴格（降低以抓更多封面照）
+RASTER_MAX_AREA_PCT = 60  # Raster 專屬最大面積佔比（%）
 
 # [C] Vector 裝飾線過濾：扁平 cluster 且位於頁首/頁尾區域 → 跳過
 DECO_ZONE_PCT        = 0.12  # 頁面頂/底各 12% 為「裝飾區」
@@ -127,11 +126,7 @@ DECO_MAX_HT_PT       = 40    # cluster 高度 < 此值（pt）才可能是裝飾
 DECO_MIN_WIDTH_RATIO = 0.65  # cluster 寬度 > 頁面此比例才算「橫跨型裝飾」
 
 # [D] Vector cluster 路徑數門檻：過少代表是裝飾圓形/單一 icon → 跳過
-MIN_CLUSTER_PATHS = 5    # cluster 內原始路徑數 < 此值 → 跳過（裝飾形狀通常只有 1~3 條路徑）
-
-TEXT_LINK_GAP_PT = 30    # 距圖表 <= 此距離的文字視為「相鄰標籤」，納入裁切並保留
-MASK_UNRELATED   = True  # 塗白裁切範圍內與圖無關的文字區塊
-SAVE_TXT         = True  # 每張圖另存同名 .txt（含圖表周邊文字）
+MIN_CLUSTER_PATHS = 5    # cluster 內原始路徑數 < 此值 → 跳過
 
 # ============================================================
 # 核心函式
@@ -241,87 +236,22 @@ def _detect_chart_regions(page) -> list[tuple]:
     return candidates
 
 
-def _find_related_text_rects(page, chart_rect) -> list:
-    """
-    回傳距 chart_rect 在指定距離以內的文字 block 矩形列表。
-    上方使用較大擴張（TEXT_LINK_GAP_TOP）以涵蓋圖表標題，
-    其餘方向使用 TEXT_LINK_GAP_OTHERS。
-    """
-    probe = chart_rect + (
-        -TEXT_LINK_GAP_PT, -TEXT_LINK_GAP_PT,
-         TEXT_LINK_GAP_PT,  TEXT_LINK_GAP_PT
-    )
-    probe &= page.rect
-    related = []
-    for b in page.get_text("blocks", clip=probe):
-        if b[6] != 0:           # 跳過圖片 block
-            continue
-        b_rect = fitz.Rect(b[0], b[1], b[2], b[3])
-        if b[4].strip():        # 只要有實際文字
-            related.append(b_rect)
-    return related
-
-
-def _mask_unrelated_text(pix, crop_rect, related_rects, page):
-    """
-    把 pix 轉成 PIL Image，找出 crop_rect 內「不相鄰」的文字 block 並塗白。
-    回傳處理後的 PIL Image。
-    """
-    img  = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-    draw = ImageDraw.Draw(img)
-    s    = RENDER_SCALE
-
-    for b in page.get_text("blocks", clip=crop_rect):
-        if b[6] != 0:
-            continue
-        b_rect = fitz.Rect(b[0], b[1], b[2], b[3])
-        # 若此 block 與任何 related_rect 有重疊則保留
-        if any((b_rect & rr).is_valid for rr in related_rects):
-            continue
-        # 否則塗白（轉換成像素座標）
-        x0 = max(0,         (b_rect.x0 - crop_rect.x0) * s)
-        y0 = max(0,         (b_rect.y0 - crop_rect.y0) * s)
-        x1 = min(pix.width, (b_rect.x1 - crop_rect.x0) * s)
-        y1 = min(pix.height,(b_rect.y1 - crop_rect.y0) * s)
-        draw.rectangle([x0, y0, x1, y1], fill=(255, 255, 255))
-    return img
-
-
 def process_pdf(pdf_path: str, year: str) -> list[dict]:
     """
     偵測單一 PDF 每頁的圖表區域（點陣圖 + 向量圖聚類），
-    高解析度裁切後存成 PNG；每頁另存全文 .txt。
+    高解析度裁切後存成 PNG。
     """
     doc       = fitz.open(pdf_path)
     file_stem = Path(pdf_path).stem
-    base_dir  = DATA_DIR / str(year) / file_stem
-    img_dir   = base_dir / "images"
-    txt_dir   = base_dir / "texts"
+    img_dir   = DATA_DIR / str(year) / file_stem / "images"
     img_dir.mkdir(parents=True, exist_ok=True)
-    if SAVE_TXT:
-        txt_dir.mkdir(parents=True, exist_ok=True)
 
     results: list[dict] = []
-    garbled_pages = 0
 
     for page_index, page in enumerate(doc):
         page_num  = page_index + 1
         try:
             page_area = page.rect.width * page.rect.height
-
-            # ── 全頁文字存檔（每頁一份）──
-            if SAVE_TXT:
-                page_text = page.get_text("text").strip()
-                if page_text:
-                    cjk = sum(1 for c in page_text if '\u4e00' <= c <= '\u9fff'
-                              or '\u3400' <= c <= '\u4dbf')
-                    is_garbled = (cjk / len(page_text) < 0.05) and len(page_text) > 50
-                    if is_garbled:
-                        garbled_pages += 1
-                    else:
-                        txt_path = txt_dir / f"{file_stem}_p{page_num}.txt"
-                        txt_path.write_text(page_text, encoding="utf-8")
-
             candidates = _detect_chart_regions(page)
 
             asset_idx = 0
@@ -330,24 +260,17 @@ def process_pdf(pdf_path: str, year: str) -> list[dict]:
                 if area_pct < MIN_AREA_PCT or area_pct > MAX_AREA_PCT:
                     continue
 
-                related_rects = _find_related_text_rects(page, r)
-                crop_rect = r
-                for tr in related_rects:
-                    crop_rect |= tr
-                crop_rect &= page.rect
-
                 asset_idx += 1
                 type_code = "RA" if rtype == 'Raster' else "VC"
                 img_name  = f"{file_stem}_p{page_num}_{asset_idx}_{type_code}.png"
                 save_path = img_dir / img_name
 
-                # 嘗試渲染，失敗則降解析度重試
                 pix = None
                 for scale in (RENDER_SCALE, 2, 1):
                     try:
                         pix = page.get_pixmap(
                             matrix=fitz.Matrix(scale, scale),
-                            clip=crop_rect, alpha=False)
+                            clip=r, alpha=False)
                         break
                     except Exception:
                         pix = None
@@ -357,11 +280,7 @@ def process_pdf(pdf_path: str, year: str) -> list[dict]:
                     asset_idx -= 1
                     continue
 
-                if MASK_UNRELATED and related_rects:
-                    img = _mask_unrelated_text(pix, crop_rect, related_rects, page)
-                    img.save(str(save_path))
-                else:
-                    pix.save(str(save_path))
+                pix.save(str(save_path))
                 pix = None
 
                 results.append({
@@ -374,7 +293,6 @@ def process_pdf(pdf_path: str, year: str) -> list[dict]:
                     "類型":           rtype,
                     "圖片檔名":       img_name,
                     "存檔路徑":       str(save_path),
-                    "亂碼頁數":       garbled_pages,
                 })
 
         except Exception as e:
