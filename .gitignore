@@ -5,6 +5,10 @@ data/**/*.pdf
 data/**/images/
 data/**/texts/
 
+# 工具腳本（本機使用，不進版控）
+esg-pdf-cuter/clean_output.py
+esg-pdf-cuter/cut_pdf_v1_3.py
+
 # Python venv
 .venv/
 
