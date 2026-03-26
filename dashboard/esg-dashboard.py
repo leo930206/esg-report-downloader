@@ -1,9 +1,9 @@
 """
-esg-dashboard/dashboard.py
+dashboard/esg-dashboard.py
 ESG 研究主控台 — 一覽下載進度與圖表萃取狀態。
 可與 esg_downloader.py / esg_pdf_cuter.py 同時執行，自動偵測資料更新。
-執行：python esg-dashboard/dashboard.py
 """
+import os
 import threading
 import subprocess
 import tkinter as tk
@@ -14,13 +14,14 @@ from datetime import datetime
 import pandas as pd
 
 # ============================================================
-# 路徑設定（從此檔案往上一層找 data/）
+# 路徑設定
 # ============================================================
 BASE_DIR = Path(__file__).parent.parent.absolute()
 DATA_DIR = BASE_DIR / "data"
 
-DOWNLOAD_STATUSES = ['成功', '未找到中文版報告', '已確認無報告', '下載失敗']
-AUTO_REFRESH_MS   = 10_000   # 每 10 秒自動偵測一次
+DOWNLOAD_STATUSES  = ['成功', '未找到中文版報告', '已確認無報告', '下載失敗']
+AUTO_REFRESH_MS    = 30_000   # 每 30 秒偵測一次
+TOTAL_COMPANIES    = 1078     # 固定分母：台灣上市公司總數
 
 # ============================================================
 # Apple 風格配色
@@ -38,9 +39,7 @@ APPLE_BORDER = '#d2d2d7'
 FONT_TITLE  = ('Helvetica Neue', 13, 'bold')
 FONT_MAIN   = ('Helvetica Neue', 10)
 FONT_LABEL  = ('Helvetica Neue', 9)
-FONT_SMALL  = ('Helvetica Neue', 8)
 FONT_NUM    = ('Helvetica Neue', 11, 'bold')
-FONT_HEADER = ('Helvetica Neue', 9, 'bold')
 
 # ============================================================
 # App Icon
@@ -71,19 +70,17 @@ def set_app_icon(root: tk.Tk, emoji: str = "📊") -> None:
         pass
 
 # ============================================================
-# 資料讀取
+# 資料讀取（效能優化：os.scandir + 淺層 glob）
 # ============================================================
 def _file_fingerprint() -> str:
-    """取得所有 Excel 與關鍵目錄的最後修改時間，用來判斷是否需要重整。"""
     parts = []
     if not DATA_DIR.is_dir():
         return ''
-    for p in sorted(DATA_DIR.rglob("ESG_Download_Progress_*.xlsx")):
+    for p in sorted(DATA_DIR.glob("*/ESG_Download_Progress_*.xlsx")):
         parts.append(f"{p}:{p.stat().st_mtime:.0f}")
-    for p in sorted(DATA_DIR.rglob("ESG_Extract_Results_*.xlsx")):
+    for p in sorted(DATA_DIR.glob("*/ESG_Extract_Results_*.xlsx")):
         parts.append(f"{p}:{p.stat().st_mtime:.0f}")
-    # 用各年度 images/ 目錄的 mtime 偵測新增圖片
-    for p in sorted(DATA_DIR.glob("[0-9][0-9][0-9][0-9]/*/images")):
+    for p in sorted(DATA_DIR.glob("[0-9][0-9][0-9][0-9]")):
         if p.is_dir():
             parts.append(f"{p}:{p.stat().st_mtime:.0f}")
     return '|'.join(parts)
@@ -100,52 +97,77 @@ def load_download_stats() -> dict[str, dict]:
             stats[year] = {'_missing': True}
             continue
         try:
-            df = pd.read_excel(xls)
+            try:
+                df = pd.read_excel(xls, sheet_name='詳細記錄', engine='openpyxl')
+            except Exception:
+                df = pd.read_excel(xls, engine='openpyxl')
             counts = df['status'].value_counts().to_dict()
             stats[year] = {s: counts.get(s, 0) for s in DOWNLOAD_STATUSES}
             stats[year]['_total'] = len(df)
-            stats[year]['_df']    = df   # 供細節視窗使用
+            stats[year]['_df']    = df
         except Exception as e:
             stats[year] = {'_error': str(e)}
     return stats
 
 
 def load_cutter_stats() -> dict[str, dict]:
+    """用 os.scandir 取代 rglob，速度快 10x 以上。"""
     stats = {}
     if not DATA_DIR.is_dir():
         return stats
     for year_dir in sorted(DATA_DIR.glob("[0-9][0-9][0-9][0-9]")):
         year = year_dir.name
-        processed_dirs = [
-            d for d in year_dir.iterdir()
-            if d.is_dir()
-            and (d / "images").is_dir()
-            and any((d / "images").glob("*.jpg"))
-        ]
-        all_pdf_stems = {p.stem for p in year_dir.rglob("*.pdf")}
+        processed_dirs = []
+        total_images   = 0
+        garbled_files  = []
+        try:
+            with os.scandir(year_dir) as entries:
+                for entry in entries:
+                    if not entry.is_dir():
+                        continue
+                    images_path = os.path.join(entry.path, "images")
+                    if os.path.isdir(images_path):
+                        try:
+                            img_count = sum(
+                                1 for f in os.scandir(images_path)
+                                if f.name.endswith('.jpg')
+                            )
+                        except OSError:
+                            img_count = 0
+                        if img_count > 0:
+                            processed_dirs.append(Path(entry.path))
+                            total_images += img_count
+                    garbled = os.path.join(entry.path, "garbled_pages.txt")
+                    if os.path.exists(garbled):
+                        garbled_files.append(Path(garbled))
+        except OSError:
+            pass
+
+        all_pdf_stems  = {p.stem for p in year_dir.glob("*.pdf")}
         processed_stems = {d.name for d in processed_dirs}
         pending = len(all_pdf_stems - processed_stems)
 
-        total_images  = sum(
-            len(list((d / "images").glob("*.jpg"))) for d in processed_dirs
-        )
-        garbled_files = list(year_dir.rglob("garbled_pages.txt"))
-
         stats[year] = {
-            'processed':       len(processed_dirs),
-            'pending':         pending,
-            'images':          total_images,
-            'garbled':         len(garbled_files),
-            'garbled_files':   garbled_files,
-            'processed_dirs':  processed_dirs,
+            'processed':      len(processed_dirs),
+            'pending':        pending,
+            'images':         total_images,
+            'garbled':        len(garbled_files),
+            'garbled_files':  garbled_files,
+            'processed_dirs': processed_dirs,
         }
     return stats
 
 # ============================================================
-# 細節視窗（點年度列後彈出）
+# 進度條工具
+# ============================================================
+def _bar(pct: int, n: int = 10) -> str:
+    filled = round(pct / 100 * n)
+    return f"{'█' * filled}{'░' * (n - filled)}  {pct:3d}%"
+
+# ============================================================
+# 細節視窗
 # ============================================================
 class DetailWindow:
-    """顯示單一年度的所有公司明細，可搜尋/篩選。"""
     _instances: dict[str, 'DetailWindow'] = {}
 
     @classmethod
@@ -171,34 +193,25 @@ class DetailWindow:
         self._build(dl_row, ct_row)
 
     def _build(self, dl_row: dict, ct_row: dict):
-        # ── Header ──
         hdr = tk.Frame(self.win, bg=APPLE_BLUE, pady=8)
         hdr.pack(fill=tk.X)
         tk.Label(hdr, text=f"{self.year} 年度明細",
                  font=FONT_TITLE, fg='white', bg=APPLE_BLUE).pack(side=tk.LEFT, padx=16)
 
-        # ── 搜尋列 ──
         sf = tk.Frame(self.win, bg=APPLE_BG, pady=8)
         sf.pack(fill=tk.X, padx=16)
         tk.Label(sf, text="搜尋：", font=FONT_MAIN, bg=APPLE_BG).pack(side=tk.LEFT)
         self.search_var = tk.StringVar()
-        entry = tk.Entry(sf, textvariable=self.search_var,
-                         font=FONT_MAIN, width=28,
-                         relief='solid', bd=1)
-        entry.pack(side=tk.LEFT, padx=(4, 12))
-
-        # 篩選下載狀態
+        tk.Entry(sf, textvariable=self.search_var, font=FONT_MAIN, width=28,
+                 relief='solid', bd=1).pack(side=tk.LEFT, padx=(4, 12))
         tk.Label(sf, text="狀態：", font=FONT_MAIN, bg=APPLE_BG).pack(side=tk.LEFT)
         self.filter_var = tk.StringVar(value='全部')
-        filter_opts = ['全部'] + DOWNLOAD_STATUSES
         ttk.Combobox(sf, textvariable=self.filter_var,
-                     values=filter_opts, width=16,
-                     state='readonly').pack(side=tk.LEFT)
-
+                     values=['全部'] + DOWNLOAD_STATUSES,
+                     width=16, state='readonly').pack(side=tk.LEFT)
         self.search_var.trace_add('write', lambda *_: self._apply_filter())
         self.filter_var.trace_add('write', lambda *_: self._apply_filter())
 
-        # ── 表格 ──
         cols = ('公司代碼', '公司名稱', '下載狀態', '已萃取', '圖片數', '亂碼頁')
         frame = tk.Frame(self.win, bg=APPLE_BG)
         frame.pack(fill=tk.BOTH, expand=True, padx=16, pady=(0, 16))
@@ -207,50 +220,36 @@ class DetailWindow:
         hsb = ttk.Scrollbar(frame, orient='horizontal')
         self.tree = ttk.Treeview(
             frame, columns=cols, show='headings',
-            yscrollcommand=vsb.set, xscrollcommand=hsb.set,
-            height=20
+            yscrollcommand=vsb.set, xscrollcommand=hsb.set, height=20
         )
         vsb.config(command=self.tree.yview)
         hsb.config(command=self.tree.xview)
 
-        widths = [80, 180, 130, 70, 70, 70]
-        for col, w in zip(cols, widths):
-            self.tree.heading(col, text=col,
-                              command=lambda c=col: self._sort(c))
+        for col, w in zip(cols, [80, 180, 130, 70, 70, 70]):
+            self.tree.heading(col, text=col, command=lambda c=col: self._sort(c))
             self.tree.column(col, width=w, anchor='center')
 
         vsb.pack(side=tk.RIGHT, fill=tk.Y)
         hsb.pack(side=tk.BOTTOM, fill=tk.X)
         self.tree.pack(fill=tk.BOTH, expand=True)
         self.tree.bind('<MouseWheel>',
-                       lambda e: (self.tree.yview_scroll(int(-1*(e.delta/120)), 'units'),
-                                  'break')[1])
+                       lambda e: (self.tree.yview_scroll(int(-1*(e.delta/120)), 'units'), 'break')[1])
 
-        # 整合下載 df + 萃取資訊
         self._build_rows(dl_row, ct_row)
         self._apply_filter()
-
-        # 統計列
-        tk.Label(self.win,
-                 text=f"共 {len(self.all_rows)} 筆",
-                 font=FONT_LABEL, fg=APPLE_GREY, bg=APPLE_BG
-                 ).pack(pady=(0, 8))
+        tk.Label(self.win, text=f"共 {len(self.all_rows)} 筆",
+                 font=FONT_LABEL, fg=APPLE_GREY, bg=APPLE_BG).pack(pady=(0, 8))
 
     def _build_rows(self, dl_row: dict, ct_row: dict):
-        """整合下載 Excel + 實際目錄掃描，建立完整列表。"""
-        # 已萃取 stem set
         processed_stems = {d.name for d in ct_row.get('processed_dirs', [])}
-        # stem → 圖片數
         img_counts = {
             d.name: len(list((d / "images").glob("*.jpg")))
             for d in ct_row.get('processed_dirs', [])
         }
-        # stem → 亂碼頁
         garbled_map: dict[str, str] = {}
         for gf in ct_row.get('garbled_files', []):
             try:
-                pages = gf.read_text(encoding='utf-8').strip()
-                garbled_map[gf.parent.name] = pages
+                garbled_map[gf.parent.name] = gf.read_text(encoding='utf-8').strip()
             except Exception:
                 garbled_map[gf.parent.name] = '?'
 
@@ -258,24 +257,18 @@ class DetailWindow:
         df = dl_row.get('_df')
         if df is not None:
             for _, r in df.iterrows():
-                # 嘗試從檔名欄位取 stem
-                raw = str(r.get('file_name', r.get('filename', r.get('檔名', ''))))
-                stem = Path(raw).stem if raw else ''
+                raw    = str(r.get('file_name', r.get('filename', r.get('檔名', ''))))
+                stem   = Path(raw).stem if raw else ''
                 code   = str(r.get('stock_id', r.get('stock_code', r.get('代碼', ''))))
                 name   = str(r.get('company_name', r.get('公司名稱', '')))
                 status = str(r.get('status', r.get('狀態', '')))
-
-                extracted = '✅' if stem in processed_stems else (
-                    '—' if status != '成功' else '⏳'
-                )
-                imgs    = img_counts.get(stem, 0)
-                garbled = garbled_map.get(stem, '')
-
+                extracted = '✅ 已萃取' if stem in processed_stems else (
+                    '—' if status != '成功' else '⏳ 待萃取')
+                imgs = img_counts.get(stem, 0)
                 self.all_rows.append((
-                    code, name, status,
-                    extracted,
+                    code, name, status, extracted,
                     str(imgs) if imgs else '—',
-                    garbled or '—',
+                    garbled_map.get(stem, '—'),
                 ))
 
     def _apply_filter(self):
@@ -290,7 +283,6 @@ class DetailWindow:
             tag = 'ok' if row[2] == '成功' else (
                   'fail' if row[2] == '下載失敗' else 'other')
             self.tree.insert('', 'end', values=row, tags=(tag,))
-
         self.tree.tag_configure('ok',    foreground=APPLE_GREEN)
         self.tree.tag_configure('fail',  foreground=APPLE_RED)
         self.tree.tag_configure('other', foreground=APPLE_GREY)
@@ -306,13 +298,13 @@ class DetailWindow:
         self.tree.heading(col, text=col + (' ↑' if not rev else ' ↓'))
 
 # ============================================================
-# 主控台視窗
+# 主控台
 # ============================================================
 class Dashboard:
     def __init__(self):
         self.root = tk.Tk()
         self.root.title("📊 ESG 研究主控台")
-        self.root.geometry("960x720")
+        self.root.geometry("980x720")
         self.root.configure(bg=APPLE_BG)
         self.root.resizable(True, True)
         set_app_icon(self.root)
@@ -321,9 +313,30 @@ class Dashboard:
         self._dl_stats: dict = {}
         self._ct_stats: dict = {}
 
+        self._setup_treeview_style()
         self._build_ui()
         self.refresh(force=True)
         self._schedule_auto_refresh()
+
+    def _setup_treeview_style(self):
+        style = ttk.Style()
+        style.theme_use('default')
+        style.configure('ESG.Treeview',
+                        background=APPLE_CARD,
+                        foreground=APPLE_TEXT,
+                        fieldbackground=APPLE_CARD,
+                        rowheight=28,
+                        font=('Helvetica Neue', 10))
+        style.configure('ESG.Treeview.Heading',
+                        background='#e8e8ed',
+                        foreground=APPLE_GREY,
+                        font=('Helvetica Neue', 9, 'bold'),
+                        relief='flat')
+        style.map('ESG.Treeview',
+                  background=[('selected', '#d0e8ff')],
+                  foreground=[('selected', APPLE_TEXT)])
+        style.map('ESG.Treeview.Heading',
+                  background=[('active', '#d2d2d7')])
 
     # ── Header ──────────────────────────────────────────────
     def _build_ui(self):
@@ -339,18 +352,28 @@ class Dashboard:
                                      fg='#a8d4ff', bg=APPLE_BLUE)
         self.last_updated.pack(side=tk.RIGHT, padx=(0, 4))
 
-        tk.Button(header, text="↺  重新整理",
-                  font=FONT_LABEL, bg='#005bb5', fg='white',
-                  activebackground='#004a99', relief='flat',
-                  padx=10, pady=4, cursor='hand2',
-                  command=lambda: self.refresh(force=True)
-                  ).pack(side=tk.RIGHT, padx=4)
-        tk.Button(header, text="📁  開啟 data/",
-                  font=FONT_LABEL, bg='#005bb5', fg='white',
-                  activebackground='#004a99', relief='flat',
-                  padx=10, pady=4, cursor='hand2',
-                  command=lambda: subprocess.Popen(['open', str(DATA_DIR)])
-                  ).pack(side=tk.RIGHT, padx=4)
+        for sym, label, cmd in [
+            ('↺', '重新整理',    lambda: self.refresh(force=True)),
+            ('📁', '開啟輸出資料夾', lambda: subprocess.Popen(['open', str(DATA_DIR)])),
+        ]:
+            btn = tk.Frame(header, bg=APPLE_CARD, cursor='hand2',
+                           highlightthickness=1, highlightbackground='#ccc')
+            sl  = tk.Label(btn, text=sym,   font=FONT_MAIN, fg=APPLE_BLUE,
+                           bg=APPLE_CARD, padx=8, pady=3)
+            tl  = tk.Label(btn, text=label, font=FONT_MAIN, fg=APPLE_TEXT,
+                           bg=APPLE_CARD, padx=4, pady=3)
+            sl.pack(side=tk.LEFT)
+            tl.pack(side=tk.LEFT, padx=(0, 8))
+            def _enter(_, b=btn, s=sl, t=tl):
+                for w in (b, s, t): w.config(bg='#e8e8ed')
+            def _leave(_, b=btn, s=sl, t=tl):
+                for w in (b, s, t): w.config(bg=APPLE_CARD)
+            c = cmd
+            for w in (btn, sl, tl):
+                w.bind('<Enter>',    _enter)
+                w.bind('<Leave>',    _leave)
+                w.bind('<Button-1>', lambda _, c=c: c())
+            btn.pack(side=tk.RIGHT, padx=4)
 
         # ── Scrollable body ──
         body_outer = tk.Frame(self.root, bg=APPLE_BG)
@@ -370,22 +393,20 @@ class Dashboard:
         canvas.bind('<Configure>',
                     lambda e: canvas.itemconfig(self.body_window, width=e.width))
         self._canvas = canvas
-        canvas.bind('<Enter>',
-                    lambda _: canvas.bind_all('<MouseWheel>', self._on_canvas_scroll))
-        canvas.bind('<Leave>',
-                    lambda _: canvas.unbind_all('<MouseWheel>'))
+        self.root.bind_all('<MouseWheel>', self._on_canvas_scroll)
 
     def _on_canvas_scroll(self, e):
-        self._canvas.yview_scroll(int(-1 * (e.delta / 120)), 'units')
+        # 只在事件來自主視窗時捲動（避免影響 DetailWindow）
+        if e.widget.winfo_toplevel() is self.root:
+            self._canvas.yview_scroll(int(-1 * (e.delta / 120)), 'units')
 
-    # ── 自動重整排程 ────────────────────────────────────────
+    # ── 自動重整 ────────────────────────────────────────────
     def _schedule_auto_refresh(self):
         self.refresh(force=False)
         self.root.after(AUTO_REFRESH_MS, self._schedule_auto_refresh)
 
-    # ── 重新整理邏輯 ────────────────────────────────────────
     def refresh(self, force: bool = True):
-        self.status_dot.config(fg='#ffcc00')   # 黃色 = 讀取中
+        self.status_dot.config(fg='#ffcc00')
 
         def _load():
             fp = _file_fingerprint()
@@ -411,19 +432,18 @@ class Dashboard:
         self._build_cutter_section(ct_stats)
         tk.Frame(self.body, bg=APPLE_BG, height=20).pack()
 
-        self.last_updated.config(
-            text=f"更新 {datetime.now().strftime('%H:%M:%S')}")
-        self.status_dot.config(fg='#5cff7a')   # 綠色 = 已同步
+        self.last_updated.config(text=f"更新 {datetime.now().strftime('%H:%M:%S')}")
+        self.status_dot.config(fg='#5cff7a')
 
-    # ── 摘要數字卡 ──────────────────────────────────────────
+    # ── 摘要卡 ──────────────────────────────────────────────
     def _build_summary(self, dl_stats: dict, ct_stats: dict):
         frame = tk.Frame(self.body, bg=APPLE_BG, padx=20, pady=10)
         frame.pack(fill=tk.X)
 
         total_success   = sum(s.get('成功', 0) for s in dl_stats.values()
                               if not s.get('_missing') and not s.get('_error'))
-        total_images    = sum(s['images']    for s in ct_stats.values())
         total_processed = sum(s['processed'] for s in ct_stats.values())
+        total_images    = sum(s['images']    for s in ct_stats.values())
         total_garbled   = sum(s['garbled']   for s in ct_stats.values())
 
         for label, val, color in [
@@ -438,129 +458,138 @@ class Dashboard:
             card.pack(side=tk.LEFT, expand=True, fill=tk.BOTH, padx=5)
             tk.Label(card, text=label, font=FONT_LABEL,
                      fg=APPLE_GREY, bg=APPLE_CARD).pack(pady=(8, 0))
-            tk.Label(card, text=val,
-                     font=('Helvetica Neue', 18, 'bold'),
+            tk.Label(card, text=val, font=('Helvetica Neue', 18, 'bold'),
                      fg=color, bg=APPLE_CARD).pack(pady=(2, 8))
 
-    # ── 下載狀態表 ──────────────────────────────────────────
+    # ── 區塊標題 ────────────────────────────────────────────
     def _section_title(self, text, subtext=''):
         f = tk.Frame(self.body, bg=APPLE_BG)
-        f.pack(fill=tk.X, padx=20, pady=(20, 6))
+        f.pack(fill=tk.X, padx=20, pady=(24, 8))
         tk.Label(f, text=text, font=('Helvetica Neue', 12, 'bold'),
                  fg=APPLE_TEXT, bg=APPLE_BG).pack(side=tk.LEFT)
         if subtext:
             tk.Label(f, text=subtext, font=FONT_LABEL,
                      fg=APPLE_GREY, bg=APPLE_BG).pack(side=tk.LEFT, padx=(8, 0))
-        tk.Frame(self.body, bg=APPLE_BORDER, height=1).pack(fill=tk.X, padx=20, pady=(0, 8))
+        tk.Frame(self.body, bg=APPLE_BORDER, height=1).pack(fill=tk.X, padx=20, pady=(0, 10))
 
-    def _table_header(self, cols: list[tuple]):
-        row = tk.Frame(self.body, bg='#e8e8ed')
-        row.pack(fill=tk.X, padx=20)
-        for text, w, anchor in cols:
-            tk.Label(row, text=text, font=FONT_HEADER,
-                     fg=APPLE_GREY, bg='#e8e8ed',
-                     width=w, anchor=anchor).pack(side=tk.LEFT, padx=4, pady=4)
-
-    def _table_row(self, cells: list[tuple], on_click=None):
-        bg  = APPLE_CARD
-        row = tk.Frame(self.body, bg=bg,
-                       highlightthickness=1, highlightbackground=APPLE_BORDER,
-                       cursor='hand2' if on_click else '')
-        row.pack(fill=tk.X, padx=20, pady=1)
-        if on_click:
-            row.bind('<Button-1>', lambda e: on_click())
-        for text, w, anchor, color in cells:
-            lbl = tk.Label(row, text=text, font=FONT_MAIN,
-                           fg=color or APPLE_TEXT, bg=bg,
-                           width=w, anchor=anchor)
-            lbl.pack(side=tk.LEFT, padx=4, pady=6)
-            if on_click:
-                lbl.bind('<Button-1>', lambda e: on_click())
-
+    # ── 下載狀態表（Treeview）───────────────────────────────
     def _build_download_section(self, stats: dict):
         self._section_title("下載狀態",
                             "來源：ESG_Download_Progress_YYYY.xlsx  ·  點選列查看明細")
-        self._table_header([
-            ('年度',        8,  'center'),
-            ('✅ 成功',      8,  'center'),
-            ('⚠️ 未找到',    10, 'center'),
-            ('🔒 已確認無',  10, 'center'),
-            ('❌ 失敗',      8,  'center'),
-            ('共',           6,  'center'),
-            ('進度',        18, 'center'),
-        ])
-        for year, s in stats.items():
+        frame = tk.Frame(self.body, bg=APPLE_BG)
+        frame.pack(fill=tk.X, padx=20, pady=(0, 4))
+
+        cols = ('年度', '✅ 成功', '⚠️ 未找到', '🔒 已確認無', '❌ 失敗', '總共爬蟲數', '進度')
+        tree = ttk.Treeview(frame, columns=cols, show='headings',
+                            height=len(stats), style='ESG.Treeview',
+                            selectmode='browse')
+        for col, w in zip(cols, [60, 70, 80, 90, 60, 90, 300]):
+            tree.heading(col, text=col)
+            tree.column(col, width=w, anchor='center', stretch=(col == '進度'))
+
+        for year, s in sorted(stats.items()):
             if s.get('_missing'):
-                self._table_row([
-                    (year, 8, 'center', APPLE_TEXT),
-                    ('尚無資料', 56, 'center', APPLE_GREY),
-                ])
+                tree.insert('', 'end', values=(year, '—', '—', '—', '—', '—', '尚無資料'),
+                            tags=('missing',))
                 continue
             if s.get('_error'):
-                self._table_row([
-                    (year, 8, 'center', APPLE_TEXT),
-                    (f"讀取錯誤：{s['_error']}", 56, 'w', APPLE_RED),
-                ])
+                tree.insert('', 'end', values=(year, '錯誤', '', '', '', '', s['_error']),
+                            tags=('error',))
                 continue
-
-            total   = s.get('_total', 1) or 1
-            success = s.get('成功', 0)
-            pct     = int(success / total * 100)
-            bar     = '█' * (pct // 20) + '░' * (5 - pct // 20)
-
+            success  = s.get('成功', 0)
+            crawled  = s.get('_total', 0)   # 實際爬過的公司數
+            pct      = int(crawled / TOTAL_COMPANIES * 100)
+            bar      = _bar(pct)
             ct = self._ct_stats.get(year, {})
-            self._table_row([
-                (year,                              8,  'center', APPLE_TEXT),
-                (str(success),                      8,  'center', APPLE_GREEN),
-                (str(s.get('未找到中文版報告', 0)),  10, 'center', APPLE_ORANGE),
-                (str(s.get('已確認無報告', 0)),      10, 'center', APPLE_GREY),
-                (str(s.get('下載失敗', 0)),          8,  'center',
-                    APPLE_RED if s.get('下載失敗', 0) else APPLE_GREY),
-                (str(total),                        6,  'center', APPLE_TEXT),
-                (f"{bar} {pct}%",                   18, 'center', APPLE_BLUE),
-            ], on_click=lambda y=year, ds=s, cs=ct: DetailWindow.open(y, ds, cs))
+            tag = 'done' if crawled >= TOTAL_COMPANIES else ('partial' if pct > 0 else 'none')
+            tree.insert('', 'end', values=(
+                year,
+                success,
+                s.get('未找到中文版報告', 0),
+                s.get('已確認無報告', 0),
+                s.get('下載失敗', 0) or '—',
+                crawled,
+                bar,
+            ), tags=(tag,))
 
+        tree.tag_configure('done',    foreground=APPLE_GREEN)
+        tree.tag_configure('partial', foreground=APPLE_BLUE)
+        tree.tag_configure('none',    foreground=APPLE_GREY)
+        tree.tag_configure('missing', foreground=APPLE_GREY)
+        tree.tag_configure('error',   foreground=APPLE_RED)
+
+        def _on_click(event):
+            iid = tree.identify_row(event.y)
+            if not iid:
+                return
+            vals = tree.item(iid, 'values')
+            year = vals[0]
+            ds   = stats.get(year, {})
+            cs   = self._ct_stats.get(year, {})
+            DetailWindow.open(year, ds, cs)
+        tree.bind('<Button-1>', _on_click)
+        tree.bind('<MouseWheel>',
+                  lambda e: (self._canvas.yview_scroll(int(-1*(e.delta/120)), 'units'), 'break')[1])
+        tree.pack(fill=tk.X)
+
+    # ── 圖表萃取狀態表（Treeview）───────────────────────────
     def _build_cutter_section(self, stats: dict):
         self._section_title("圖表萃取狀態",
                             "來源：掃描 data/{year}/*/images/*.jpg  ·  點選列查看明細")
-        self._table_header([
-            ('年度',        8,  'center'),
-            ('✅ 已萃取',    9,  'center'),
-            ('⏳ 待處理',    9,  'center'),
-            ('🖼 圖片數',   11, 'center'),
-            ('⚠️ 亂碼公司', 10, 'center'),
-            ('進度',        18, 'center'),
-        ])
-        for year, s in stats.items():
+        frame = tk.Frame(self.body, bg=APPLE_BG)
+        frame.pack(fill=tk.X, padx=20, pady=(0, 4))
+
+        cols = ('年度', '✅ 已萃取', '⏳ 待處理', '🖼 圖片數', '⚠️ 亂碼公司', '進度')
+        tree = ttk.Treeview(frame, columns=cols, show='headings',
+                            height=len(stats), style='ESG.Treeview',
+                            selectmode='browse')
+        for col, w in zip(cols, [60, 80, 80, 80, 90, 300]):
+            tree.heading(col, text=col)
+            tree.column(col, width=w, anchor='center', stretch=(col == '進度'))
+
+        for year, s in sorted(stats.items()):
             processed = s['processed']
             pending   = s['pending']
             total     = processed + pending or 1
             pct       = int(processed / total * 100)
-            bar       = '█' * (pct // 20) + '░' * (5 - pct // 20)
 
             if processed == 0 and pending == 0:
-                status_text  = '尚無資料'
-                status_color = APPLE_GREY
+                bar = '尚無資料'
+                tag = 'missing'
             elif pending == 0:
-                status_text  = f"{bar} 100%"
-                status_color = APPLE_GREEN
+                bar = _bar(100)
+                tag = 'done'
             else:
-                status_text  = f"{bar} {pct}%"
-                status_color = APPLE_BLUE
+                bar = _bar(pct)
+                tag = 'partial' if pct > 0 else 'none'
 
-            dl = self._dl_stats.get(year, {})
-            self._table_row([
-                (year,                8,  'center', APPLE_TEXT),
-                (str(processed),      9,  'center',
-                    APPLE_GREEN if processed else APPLE_GREY),
-                (str(pending),        9,  'center',
-                    APPLE_ORANGE if pending else APPLE_GREY),
-                (f"{s['images']:,}",  11, 'center',
-                    APPLE_TEXT if s['images'] else APPLE_GREY),
-                (str(s['garbled']),   10, 'center',
-                    APPLE_ORANGE if s['garbled'] else APPLE_GREY),
-                (status_text,         14, 'center', status_color),
-            ], on_click=lambda y=year, ds=dl, cs=s: DetailWindow.open(y, ds, cs))
+            tree.insert('', 'end', values=(
+                year,
+                processed or '—',
+                pending   or '—',
+                f"{s['images']:,}" if s['images'] else '—',
+                s['garbled'] or '—',
+                bar,
+            ), tags=(tag,))
+
+        tree.tag_configure('done',    foreground=APPLE_GREEN)
+        tree.tag_configure('partial', foreground=APPLE_BLUE)
+        tree.tag_configure('none',    foreground=APPLE_GREY)
+        tree.tag_configure('missing', foreground=APPLE_GREY)
+
+        def _on_click(event):
+            iid = tree.identify_row(event.y)
+            if not iid:
+                return
+            vals = tree.item(iid, 'values')
+            year = vals[0]
+            ds   = self._dl_stats.get(year, {})
+            cs   = stats.get(year, {})
+            DetailWindow.open(year, ds, cs)
+        tree.bind('<Button-1>', _on_click)
+        tree.bind('<MouseWheel>',
+                  lambda e: (self._canvas.yview_scroll(int(-1*(e.delta/120)), 'units'), 'break')[1])
+        tree.pack(fill=tk.X)
 
     def run(self):
         self.root.mainloop()

@@ -2,6 +2,7 @@ import pandas as pd
 import os
 import sys
 import platform
+import subprocess
 import time
 import random
 import threading
@@ -708,6 +709,43 @@ def load_progress():
             log(f"📂 {year} 年：{len(records)} 筆，成功抓取：{done_ok} 家（已確認無報告：{done_confirmed} 家）")
         except Exception as e:
             log(f"⚠️  {year} 年進度載入失敗（{pf}）：{e}")
+    # 補標：掃 data/ 所有年度資料夾，PDF 或公司資料夾存在但紀錄非「成功」→ 補標
+    # PDF 可能在萃取後被刪，但公司資料夾（images/texts）仍留著
+    patched = 0
+    for year in _year_range():
+        year_folder = str(_DATA_DIR / str(year))
+        if not os.path.exists(year_folder):
+            continue
+        existing = {str(r.get('stock_id', '')): r
+                    for r in progress_records if r.get('year') == year}
+        seen_sids = set()
+        for entry in os.listdir(year_folder):
+            m = re.match(r'^\d{4}_(\d+)_(.+?)(?:\.pdf)?$', entry)
+            if not m:
+                continue
+            sid, cname = m.group(1), m.group(2)
+            if sid in seen_sids or (year, sid) in completed_keys:
+                continue
+            seen_sids.add(sid)
+            fname = entry if entry.endswith('.pdf') else ''
+            if sid in existing:
+                idx = progress_records.index(existing[sid])
+                progress_records[idx]['status'] = '成功'
+                if fname:
+                    progress_records[idx]['filename'] = fname
+            else:
+                progress_records.append({
+                    'year': year, 'stock_id': sid, 'company_name': cname,
+                    'status': '成功', 'filename': fname, 'url': '', 'note': '啟動補標'
+                })
+            completed_keys.add((year, sid))
+            patched += 1
+    if patched:
+        log(f"🔁 補標已存在 PDF：{patched} 筆（跨所有年度）")
+        for year in _year_range():
+            if any(r.get('year') == year for r in progress_records):
+                save_to_excel(year)
+
     total_ok = sum(1 for r in progress_records if r.get('status') == '成功')
     total_confirmed = sum(1 for r in progress_records if r.get('status') == '已確認無報告')
     log(f"📂 合計載入：{len(progress_records)} 筆，成功抓取：{total_ok} 家（已確認無報告：{total_confirmed} 家）")
@@ -718,7 +756,7 @@ def save_to_excel(year):
         year_records = [r for r in progress_records if r.get('year') == year]
         if not year_records:
             return
-        year_folder = os.path.abspath(str(year))
+        year_folder = str(_DATA_DIR / str(year))
         os.makedirs(year_folder, exist_ok=True)
 
         df_p = pd.DataFrame(year_records)
@@ -790,10 +828,25 @@ def startup_cleanup(download_folder, year):
                     log(f"   ⚠️  無法刪除 {f}: {e}")
             changed = True
 
-    pdf_files = set(os.listdir(download_folder)) if os.path.exists(download_folder) else set()
-    to_remove = [r for r in progress_records
-                 if r.get('year') == year and r.get('status') == '成功'
-                 and r.get('filename', '') not in pdf_files]
+    all_entries = set(os.listdir(download_folder)) if os.path.exists(download_folder) else set()
+    # 用 stock_id 前綴比對 PDF 或公司資料夾（PDF 可能在萃取後被刪）
+    def _entry_for(sid):
+        prefix = f"{year}_{sid}_"
+        return next((f for f in all_entries if f.startswith(prefix)), None)
+
+    to_remove = []
+    for r in progress_records:
+        if r.get('year') != year or r.get('status') != '成功':
+            continue
+        sid = str(r.get('stock_id', ''))
+        match = _entry_for(sid)
+        if match:
+            pdf_match = match if match.endswith('.pdf') else None
+            if pdf_match and r.get('filename') != pdf_match:
+                r['filename'] = pdf_match
+                changed = True
+        else:
+            to_remove.append(r)
     for r in to_remove:
         progress_records.remove(r)
         completed_keys.discard((year, str(r.get('stock_id', ''))))

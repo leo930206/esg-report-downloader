@@ -27,7 +27,7 @@ esg-report/
 
 ## 環境安裝
 
-需要 **Python 3.9 以上**。
+需要 **Python 3.12 以上**（macOS 16 Tahoe 以上請勿使用 Python 3.9，Tk 不相容）。
 
 ### macOS / Linux
 
