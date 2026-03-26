@@ -421,13 +421,24 @@ class Dashboard:
 
     def _render(self, dl_stats: dict, ct_stats: dict, fingerprint: str):
         self._last_fingerprint = fingerprint
+
+        # 確保 2015–2024 全部出現（即使資料夾尚未建立）
+        for y in range(2015, 2025):
+            yr = str(y)
+            if yr not in dl_stats:
+                dl_stats[yr] = {'_missing': True}
+            if yr not in ct_stats:
+                ct_stats[yr] = {
+                    'processed': 0, 'pending': 0, 'images': 0,
+                    'garbled': 0, 'garbled_files': [], 'processed_dirs': [],
+                }
+
         self._dl_stats = dl_stats
         self._ct_stats = ct_stats
 
         for w in self.body.winfo_children():
             w.destroy()
 
-        self._build_summary(dl_stats, ct_stats)
         self._build_download_section(dl_stats)
         self._build_cutter_section(ct_stats)
         tk.Frame(self.body, bg=APPLE_BG, height=20).pack()
@@ -480,13 +491,18 @@ class Dashboard:
         frame.pack(fill=tk.X, padx=20, pady=(0, 4))
 
         cols = ('年度', '✅ 成功', '⚠️ 未找到', '🔒 已確認無', '❌ 失敗', '總共爬蟲數', '進度')
+        col_widths = [60, 70, 80, 90, 60, 90, 300]
         tree = ttk.Treeview(frame, columns=cols, show='headings',
-                            height=len(stats), style='ESG.Treeview',
+                            height=len(stats) + 1, style='ESG.Treeview',
                             selectmode='browse')
-        for col, w in zip(cols, [60, 70, 80, 90, 60, 90, 300]):
+        for col, w in zip(cols, col_widths):
             tree.heading(col, text=col)
-            tree.column(col, width=w, anchor='center', stretch=(col == '進度'))
+            tree.column(col, width=w,
+                        anchor='w' if col == '進度' else 'center',
+                        stretch=(col == '進度'))
 
+        tot = {'成功': 0, '未找到中文版報告': 0, '已確認無報告': 0, '下載失敗': 0, '_total': 0}
+        active_years = 0
         for year, s in sorted(stats.items()):
             if s.get('_missing'):
                 tree.insert('', 'end', values=(year, '—', '—', '—', '—', '—', '尚無資料'),
@@ -496,41 +512,59 @@ class Dashboard:
                 tree.insert('', 'end', values=(year, '錯誤', '', '', '', '', s['_error']),
                             tags=('error',))
                 continue
+            active_years += 1
             success  = s.get('成功', 0)
-            crawled  = s.get('_total', 0)   # 實際爬過的公司數
+            crawled  = s.get('_total', 0)
             pct      = int(crawled / TOTAL_COMPANIES * 100)
             bar      = _bar(pct)
-            ct = self._ct_stats.get(year, {})
             tag = 'done' if crawled >= TOTAL_COMPANIES else ('partial' if pct > 0 else 'none')
             tree.insert('', 'end', values=(
-                year,
-                success,
+                year, success,
                 s.get('未找到中文版報告', 0),
                 s.get('已確認無報告', 0),
                 s.get('下載失敗', 0) or '—',
-                crawled,
-                bar,
+                crawled, bar,
             ), tags=(tag,))
+            for k in tot:
+                tot[k] += s.get(k, 0)
+
+        # 總計列
+        tot_pct_dl   = int(tot['_total'] / 10780 * 100)
+        tot_bar_dl   = _bar(tot_pct_dl)
+        tree.insert('', 'end', values=(
+            '總計',
+            tot['成功'],
+            tot['未找到中文版報告'],
+            tot['已確認無報告'],
+            tot['下載失敗'] or '—',
+            tot['_total'],
+            tot_bar_dl,
+        ), tags=('total',))
 
         tree.tag_configure('done',    foreground=APPLE_GREEN)
         tree.tag_configure('partial', foreground=APPLE_BLUE)
         tree.tag_configure('none',    foreground=APPLE_GREY)
         tree.tag_configure('missing', foreground=APPLE_GREY)
         tree.tag_configure('error',   foreground=APPLE_RED)
+        tree.tag_configure('total',   foreground=APPLE_TEXT, font=('Helvetica Neue', 10, 'bold'))
 
         def _on_click(event):
             iid = tree.identify_row(event.y)
             if not iid:
                 return
             vals = tree.item(iid, 'values')
-            year = vals[0]
-            ds   = stats.get(year, {})
-            cs   = self._ct_stats.get(year, {})
-            DetailWindow.open(year, ds, cs)
+            yr   = vals[0]
+            if yr == '總計':
+                return
+            ds = stats.get(yr, {})
+            cs = self._ct_stats.get(yr, {})
+            DetailWindow.open(yr, ds, cs)
         tree.bind('<Button-1>', _on_click)
         tree.bind('<MouseWheel>',
                   lambda e: (self._canvas.yview_scroll(int(-1*(e.delta/120)), 'units'), 'break')[1])
         tree.pack(fill=tk.X)
+        tk.Label(frame, text='年度進度 = 爬蟲數 ÷ 1078　　總計進度 = 爬蟲數總和 ÷ 10780',
+                 font=('Helvetica Neue', 9), fg=APPLE_GREY, bg=APPLE_BG).pack(anchor='e', pady=(2, 0))
 
     # ── 圖表萃取狀態表（Treeview）───────────────────────────
     def _build_cutter_section(self, stats: dict):
@@ -539,43 +573,65 @@ class Dashboard:
         frame = tk.Frame(self.body, bg=APPLE_BG)
         frame.pack(fill=tk.X, padx=20, pady=(0, 4))
 
-        cols = ('年度', '✅ 已萃取', '⏳ 待處理', '🖼 圖片數', '⚠️ 亂碼公司', '進度')
+        cols = ('年度', '✅ 已萃取', '🖼 圖片數', '⚠️ 亂碼公司', '進度')
         tree = ttk.Treeview(frame, columns=cols, show='headings',
-                            height=len(stats), style='ESG.Treeview',
+                            height=len(stats) + 1, style='ESG.Treeview',
                             selectmode='browse')
-        for col, w in zip(cols, [60, 80, 80, 80, 90, 300]):
+        for col, w in zip(cols, [60, 130, 130, 130, 300]):
             tree.heading(col, text=col)
-            tree.column(col, width=w, anchor='center', stretch=(col == '進度'))
+            anchor = 'w' if col == '進度' else 'center'
+            tree.column(col, width=w, anchor=anchor, stretch=(col == '進度'))
+
+        tot_processed = 0
+        tot_images    = 0
+        tot_garbled   = 0
+        tot_dl        = 0
 
         for year, s in sorted(stats.items()):
-            processed = s['processed']
-            pending   = s['pending']
-            total     = processed + pending or 1
-            pct       = int(processed / total * 100)
+            processed  = s['processed']
+            dl_success = self._dl_stats.get(year, {}).get('成功', 0)
+            pct        = int(processed / dl_success * 100) if dl_success else 0
 
-            if processed == 0 and pending == 0:
+            tot_processed += processed
+            tot_images    += s['images']
+            tot_garbled   += s['garbled']
+            tot_dl        += dl_success
+
+            if dl_success == 0:
                 bar = '尚無資料'
                 tag = 'missing'
-            elif pending == 0:
+            elif pct >= 100:
                 bar = _bar(100)
                 tag = 'done'
+            elif pct == 0:
+                bar = '尚未開始'
+                tag = 'none'
             else:
                 bar = _bar(pct)
-                tag = 'partial' if pct > 0 else 'none'
+                tag = 'partial'
 
             tree.insert('', 'end', values=(
                 year,
                 processed or '—',
-                pending   or '—',
                 f"{s['images']:,}" if s['images'] else '—',
                 s['garbled'] or '—',
                 bar,
             ), tags=(tag,))
 
+        tot_pct = int(tot_processed / tot_dl * 100) if tot_dl else 0
+        tree.insert('', 'end', values=(
+            '總計',
+            tot_processed or '—',
+            f"{tot_images:,}" if tot_images else '—',
+            tot_garbled or '—',
+            _bar(tot_pct) if tot_dl else '—',
+        ), tags=('total',))
+
         tree.tag_configure('done',    foreground=APPLE_GREEN)
         tree.tag_configure('partial', foreground=APPLE_BLUE)
         tree.tag_configure('none',    foreground=APPLE_GREY)
         tree.tag_configure('missing', foreground=APPLE_GREY)
+        tree.tag_configure('total',   foreground=APPLE_TEXT, font=('Helvetica Neue', 10, 'bold'))
 
         def _on_click(event):
             iid = tree.identify_row(event.y)
@@ -583,6 +639,8 @@ class Dashboard:
                 return
             vals = tree.item(iid, 'values')
             year = vals[0]
+            if year == '總計':
+                return
             ds   = self._dl_stats.get(year, {})
             cs   = stats.get(year, {})
             DetailWindow.open(year, ds, cs)
@@ -590,6 +648,8 @@ class Dashboard:
         tree.bind('<MouseWheel>',
                   lambda e: (self._canvas.yview_scroll(int(-1*(e.delta/120)), 'units'), 'break')[1])
         tree.pack(fill=tk.X)
+        tk.Label(frame, text='年度進度 = 已萃取 ÷ 該年下載成功數　　總計進度 = 已萃取總和 ÷ 下載成功總和',
+                 font=('Helvetica Neue', 9), fg=APPLE_GREY, bg=APPLE_BG).pack(anchor='e', pady=(2, 0))
 
     def run(self):
         self.root.mainloop()

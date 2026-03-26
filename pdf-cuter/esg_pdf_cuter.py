@@ -405,7 +405,7 @@ def _is_already_processed(pdf_path: str, year: str) -> bool:
     img_dir   = DATA_DIR / str(year) / file_stem / "images"
     if not img_dir.is_dir():
         return False
-    return any(img_dir.glob("*.png"))
+    return any(img_dir.glob("*.jpg")) or any(img_dir.glob("*.png"))
 
 
 def run_extraction(years):
