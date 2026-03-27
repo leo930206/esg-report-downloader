@@ -30,6 +30,3 @@ __pycache__/
 *.pyc
 *.pyo
 
-# logs（保留資料夾，不追蹤內容）
-**/logs/*.log
-**/logs/*.txt

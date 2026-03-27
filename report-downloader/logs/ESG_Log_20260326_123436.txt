@@ -1,0 +1,1 @@
+[12:34:23] ❌ 讀取 tw_listed.xlsx 失敗: Missing optional dependency 'openpyxl'.  Use pip or conda to install openpyxl.
