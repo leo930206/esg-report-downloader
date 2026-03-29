@@ -1,0 +1,40 @@
+[14:02:20] 讀取到 1078 家公司
+[14:02:20] 📂 2015 年：1078 筆，成功抓取：263 家（已確認無報告：0 家）
+[14:02:21] 📂 2016 年：1078 筆，成功抓取：325 家（已確認無報告：0 家）
+[14:02:21] 📂 2017 年：1078 筆，成功抓取：340 家（已確認無報告：0 家）
+[14:02:21] 📂 2018 年：1078 筆，成功抓取：360 家（已確認無報告：0 家）
+[14:02:21] 📂 2019 年：1078 筆，成功抓取：399 家（已確認無報告：0 家）
+[14:02:21] 📂 2020 年：1078 筆，成功抓取：427 家（已確認無報告：0 家）
+[14:02:21] 📂 2021 年：1078 筆，成功抓取：489 家（已確認無報告：4 家）
+[14:02:21] 📂 2022 年：637 筆，成功抓取：635 家（已確認無報告：0 家）
+[14:02:21] 📂 2023 年：1078 筆，成功抓取：725 家（已確認無報告：1 家）
+[14:02:21] 📂 2024 年：1078 筆，成功抓取：1040 家（已確認無報告：1 家）
+[14:02:21] 📂 合計載入：10339 筆，成功抓取：5003 家（已確認無報告：6 家）
+[14:02:21] :arrows_counterclockwise: 補抓模式：Excel 裡「成功」和「確認無報告」的跳過，其餘全部重新抓
+[14:02:21] 🔍 2022 年度啟動清理中（檢查 PDF 資料夾，刪除不完整下載、補齊遺失紀錄）...
+[14:02:21] ✅ 檢查完成，無需清理
+[14:02:26] ❌ 程式執行時發生嚴重錯誤: Message: session not created: Chrome instance exited. Examine ChromeDriver verbose log to determine the cause.; For documentation on this error, please visit: https://www.selenium.dev/documentation/webdriver/troubleshooting/errors#sessionnotcreatedexception
+Stacktrace:
+	chromedriver!GetHandleVerifier [0x7ff7ab7f29c5+2ed785]
+	chromedriver!GetHandleVerifier [0x7ff7ab51a0d0+14e90]
+	chromedriver!(No symbol) [0x7ff7ab27db2d]
+	chromedriver!(No symbol) [0x7ff7ab2be396]
+	chromedriver!(No symbol) [0x7ff7ab2b97a1]
+	chromedriver!(No symbol) [0x7ff7ab30dc51]
+	chromedriver!(No symbol) [0x7ff7ab30d4b6]
+	chromedriver!(No symbol) [0x7ff7ab2c9298]
+	chromedriver!(No symbol) [0x7ff7ab2ca183]
+	chromedriver!GetHandleVerifier [0x7ff7ab81de0d+318bcd]
+	chromedriver!GetHandleVerifier [0x7ff7ab818588+313348]
+	chromedriver!GetHandleVerifier [0x7ff7ab839d7a+334b3a]
+	chromedriver!GetHandleVerifier [0x7ff7ab536785+31545]
+	chromedriver!GetHandleVerifier [0x7ff7ab53facc+3a88c]
+	chromedriver!GetHandleVerifier [0x7ff7ab523634+1e3f4]
+	chromedriver!GetHandleVerifier [0x7ff7ab5237e6+1e5a6]
+	chromedriver!GetHandleVerifier [0x7ff7ab507e37+2bf7]
+	KERNEL32!BaseThreadInitThunk [0x7ffc790fe8d7+17]
+	ntdll!RtlUserThreadStart [0x7ffc79a8c48c+2c]
+
+[14:02:26] 📊 2022 年度共 0 個 PDF
+[14:02:26] 
+程式結束，請關閉視窗
